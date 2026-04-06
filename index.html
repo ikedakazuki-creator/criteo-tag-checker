@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Criteoタグ設置状況確認ツール</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif;
+      background: #f5f7fa;
+      color: #333;
+      min-height: 100vh;
+    }
+    .header {
+      background: linear-gradient(135deg, #ff6b00, #ff8c33);
+      color: white;
+      padding: 24px 32px;
+      text-align: center;
+    }
+    .header h1 { font-size: 24px; font-weight: 700; }
+    .header p { font-size: 14px; margin-top: 6px; opacity: 0.9; }
+    .container { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+
+    .input-section {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 24px;
+    }
+    .input-section label {
+      font-weight: 600;
+      font-size: 14px;
+      display: block;
+      margin-bottom: 8px;
+    }
+    .input-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .input-row input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-row input:focus { border-color: #ff6b00; }
+    .btn {
+      padding: 10px 24px;
+      background: #ff6b00;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #e55d00; }
+    .btn:disabled { background: #ccc; cursor: not-allowed; }
+
+    .options-row {
+      display: flex;
+      gap: 20px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #666;
+      align-items: center;
+    }
+    .options-row label { font-weight: 400; margin-bottom: 0; }
+    .options-row select {
+      padding: 4px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+
+    .progress-section {
+      background: white;
+      border-radius: 12px;
+      padding: 20px 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 24px;
+      display: none;
+    }
+    .progress-bar-wrapper {
+      background: #eee;
+      border-radius: 8px;
+      height: 8px;
+      margin: 12px 0;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #ff6b00, #ff8c33);
+      border-radius: 8px;
+      width: 0%;
+      transition: width 0.3s;
+    }
+    .progress-text { font-size: 13px; color: #666; }
+    .progress-log {
+      margin-top: 12px;
+      max-height: 150px;
+      overflow-y: auto;
+      font-size: 12px;
+      color: #888;
+      font-family: monospace;
+      background: #f8f8f8;
+      padding: 8px 12px;
+      border-radius: 6px;
+    }
+    .progress-log div { padding: 1px 0; }
+
+    .result-section {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      display: none;
+    }
+    .result-section h2 {
+      font-size: 18px;
+      margin-bottom: 4px;
+    }
+    .result-meta {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    thead th {
+      background: #f0f0f0;
+      padding: 10px 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 2px solid #ddd;
+    }
+    tbody td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+    tbody tr:hover { background: #fafafa; }
+    .tag-found { color: #16a34a; font-weight: 600; }
+    .tag-missing { color: #dc2626; font-weight: 600; }
+    .url-pattern {
+      font-family: monospace;
+      font-size: 13px;
+      color: #555;
+      word-break: break-all;
+    }
+    .url-list {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #999;
+    }
+    .url-list details summary {
+      cursor: pointer;
+      color: #ff6b00;
+    }
+    .url-list ul {
+      list-style: none;
+      padding-left: 8px;
+      margin-top: 4px;
+    }
+    .url-list li {
+      padding: 1px 0;
+      word-break: break-all;
+    }
+    .event-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: monospace;
+    }
+    .badge-vh { background: #dbeafe; color: #1e40af; }
+    .badge-vl { background: #fef3c7; color: #92400e; }
+    .badge-vp { background: #d1fae5; color: #065f46; }
+    .badge-vb { background: #fce7f3; color: #9d174d; }
+    .badge-tc { background: #ede9fe; color: #5b21b6; }
+    .badge-other { background: #f3f4f6; color: #374151; }
+
+    .export-btn {
+      margin-top: 16px;
+      padding: 8px 16px;
+      background: #16a34a;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .export-btn:hover { background: #15803d; }
+
+    .error-msg {
+      background: #fef2f2;
+      color: #dc2626;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .cors-note {
+      font-size: 12px;
+      color: #999;
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Criteoタグ設置状況確認ツール</h1>
+    <p>サイトURLを入力すると、Criteoタグの設置状況を自動で確認します</p>
+  </div>
+
+  <div class="container">
+    <div class="input-section">
+      <label>確認したいサイトのURL</label>
+      <div class="input-row">
+        <input type="url" id="siteUrl" placeholder="https://example.co.jp" />
+        <button class="btn" id="startBtn" onclick="startCrawl()">確認開始</button>
+      </div>
+      <div class="options-row">
+        <label>クロール深度:
+          <select id="maxDepth">
+            <option value="1">1（TOPのリンク先のみ）</option>
+            <option value="2" selected>2（2階層まで）</option>
+            <option value="3">3（3階層まで）</option>
+          </select>
+        </label>
+        <label>最大ページ数:
+          <select id="maxPages">
+            <option value="30">30</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+      </div>
+      <p class="cors-note">※ CORSプロキシ経由でHTMLを取得します。一部のサイトでは取得できない場合があります。</p>
+    </div>
+
+    <div class="error-msg" id="errorMsg"></div>
+
+    <div class="progress-section" id="progressSection">
+      <strong>クロール中...</strong>
+      <div class="progress-bar-wrapper">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-text" id="progressText">0 / 0 ページ確認済み</div>
+      <div class="progress-log" id="progressLog"></div>
+    </div>
+
+    <div class="result-section" id="resultSection">
+      <h2>確認結果</h2>
+      <div class="result-meta" id="resultMeta"></div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:160px">イベント</th>
+            <th>説明</th>
+            <th>設置URL パターン</th>
+            <th style="width:90px">設置状況</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+      <button class="export-btn" onclick="exportCSV()">CSVダウンロード</button>
+    </div>
+  </div>
+
+<script>
+// Criteo event types
+const CRITEO_EVENTS = [
+  { key: 'vh', code: 'e=vh', name: 'viewHome', desc: 'トップページ閲覧' },
+  { key: 'vl', code: 'e=vl', name: 'viewList', desc: '商品一覧ページ閲覧' },
+  { key: 'vp', code: 'e=vp', name: 'viewProduct', desc: '商品詳細ページ閲覧' },
+  { key: 'vb', code: 'e=vb', name: 'viewBasket', desc: 'カートページ閲覧' },
+  { key: 'tc', code: 'e=tc', name: 'trackTransaction', desc: '購入完了ページ' },
+];
+
+// CORS proxies (fallback chain)
+const CORS_PROXIES = [
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
+
+let currentProxyIndex = 0;
+let aborted = false;
+
+function getProxyUrl(url) {
+  return CORS_PROXIES[currentProxyIndex](url);
+}
+
+async function fetchWithProxy(url) {
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    const idx = (currentProxyIndex + i) % CORS_PROXIES.length;
+    try {
+      const proxyUrl = CORS_PROXIES[idx](url);
+      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) });
+      if (resp.ok) {
+        currentProxyIndex = idx;
+        return await resp.text();
+      }
+    } catch (e) {
+      // try next proxy
+    }
+  }
+  return null;
+}
+
+function log(msg) {
+  const logEl = document.getElementById('progressLog');
+  const div = document.createElement('div');
+  div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function updateProgress(done, total) {
+  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  document.getElementById('progressBar').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${done} / ${total} ページ確認済み`;
+}
+
+function extractLinks(html, baseUrl) {
+  const links = new Set();
+  const base = new URL(baseUrl);
+  // Match href attributes
+  const hrefRegex = /href\s*=\s*["']([^"'#]+?)["']/gi;
+  let match;
+  while ((match = hrefRegex.exec(html)) !== null) {
+    try {
+      const resolved = new URL(match[1], baseUrl);
+      // Same domain only
+      if (resolved.hostname === base.hostname && (resolved.protocol === 'http:' || resolved.protocol === 'https:')) {
+        // Clean URL
+        resolved.hash = '';
+        const clean = resolved.href.replace(/\/+$/, '') || resolved.origin;
+        links.add(clean);
+      }
+    } catch (e) {}
+  }
+  return links;
+}
+
+function detectCriteoTags(html) {
+  const events = new Set();
+
+  // Check if Criteo-related scripts exist
+  const hasCriteo = /criteo/i.test(html) ||
+                    /ctag\.js/i.test(html) ||
+                    /static\.criteo\.net/i.test(html) ||
+                    /criteo_q/i.test(html) ||
+                    /cto_tms/i.test(html);
+
+  if (!hasCriteo) return events;
+
+  // Detect specific events
+  // Pattern: "event":"viewHome" or "event": "viewHome" or event:"viewHome"
+  const eventPatterns = [
+    { key: 'vh', patterns: [/viewHome/i, /["']event["']\s*:\s*["']vh["']/i] },
+    { key: 'vl', patterns: [/viewList/i, /["']event["']\s*:\s*["']vl["']/i, /viewCategory/i] },
+    { key: 'vp', patterns: [/viewProduct/i, /["']event["']\s*:\s*["']vp["']/i, /viewItem/i] },
+    { key: 'vb', patterns: [/viewBasket/i, /["']event["']\s*:\s*["']vb["']/i, /viewCart/i] },
+    { key: 'tc', patterns: [/trackTransaction/i, /["']event["']\s*:\s*["']tc["']/i] },
+  ];
+
+  for (const ep of eventPatterns) {
+    for (const pat of ep.patterns) {
+      if (pat.test(html)) {
+        events.add(ep.key);
+        break;
+      }
+    }
+  }
+
+  // If Criteo is present but no specific event detected, mark as unknown
+  if (events.size === 0) {
+    events.add('unknown');
+  }
+
+  return events;
+}
+
+function findUrlPattern(urls, baseDomain) {
+  if (urls.length === 0) return '—';
+
+  // If only one URL
+  if (urls.length === 1) {
+    return urls[0];
+  }
+
+  // Find common path prefix
+  const paths = urls.map(u => {
+    try { return new URL(u).pathname; } catch { return '/'; }
+  });
+
+  // Group by directory pattern
+  const dirGroups = {};
+  for (const url of urls) {
+    try {
+      const parsed = new URL(url);
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      let key;
+      if (segments.length === 0) {
+        key = '/';
+      } else if (segments.length === 1) {
+        key = `/${segments[0]}/`;
+      } else {
+        key = `/${segments[0]}/${segments[1]}/`;
+      }
+      if (!dirGroups[key]) dirGroups[key] = [];
+      dirGroups[key].push(url);
+    } catch {
+      if (!dirGroups['/']) dirGroups['/'] = [];
+      dirGroups['/'].push(url);
+    }
+  }
+
+  // Build pattern string
+  const patterns = [];
+  for (const [dir, groupUrls] of Object.entries(dirGroups)) {
+    if (dir === '/') {
+      patterns.push(`${baseDomain}/`);
+    } else {
+      patterns.push(`${baseDomain}${dir} 配下`);
+    }
+  }
+
+  return patterns.join('\n');
+}
+
+async function startCrawl() {
+  const urlInput = document.getElementById('siteUrl').value.trim();
+  if (!urlInput) {
+    showError('URLを入力してください');
+    return;
+  }
+
+  let baseUrl;
+  try {
+    baseUrl = new URL(urlInput.startsWith('http') ? urlInput : 'https://' + urlInput);
+  } catch {
+    showError('有効なURLを入力してください');
+    return;
+  }
+
+  const maxDepth = parseInt(document.getElementById('maxDepth').value);
+  const maxPages = parseInt(document.getElementById('maxPages').value);
+
+  // Reset UI
+  aborted = false;
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('startBtn').textContent = '確認中...';
+  document.getElementById('errorMsg').style.display = 'none';
+  document.getElementById('progressSection').style.display = 'block';
+  document.getElementById('resultSection').style.display = 'none';
+  document.getElementById('progressLog').innerHTML = '';
+  updateProgress(0, 0);
+
+  const visited = new Map(); // url -> { events }
+  const queue = [{ url: baseUrl.href.replace(/\/+$/, '') || baseUrl.origin, depth: 0 }];
+  const seen = new Set([queue[0].url]);
+  let processed = 0;
+
+  log(`クロール開始: ${baseUrl.origin}`);
+
+  while (queue.length > 0 && processed < maxPages && !aborted) {
+    const { url, depth } = queue.shift();
+    updateProgress(processed, processed + queue.length + 1);
+    log(`取得中: ${url}`);
+
+    const html = await fetchWithProxy(url);
+    if (!html) {
+      log(`取得失敗: ${url}`);
+      processed++;
+      continue;
+    }
+
+    // Detect Criteo tags
+    const events = detectCriteoTags(html);
+    visited.set(url, { events });
+
+    if (events.size > 0) {
+      const eventStr = [...events].join(', ');
+      log(`✓ Criteoタグ検出: ${eventStr} @ ${url}`);
+    } else {
+      log(`- タグなし: ${url}`);
+    }
+
+    // Extract links if within depth
+    if (depth < maxDepth) {
+      const links = extractLinks(html, url);
+      for (const link of links) {
+        if (!seen.has(link) && seen.size < maxPages * 2) {
+          seen.add(link);
+          queue.push({ url: link, depth: depth + 1 });
+        }
+      }
+    }
+
+    processed++;
+    updateProgress(processed, processed + queue.length);
+
+    // Small delay to avoid hammering
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  log(`クロール完了: ${processed} ページを確認`);
+  updateProgress(processed, processed);
+
+  // Build results
+  showResults(visited, baseUrl);
+
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('startBtn').textContent = '確認開始';
+}
+
+function showResults(visited, baseUrl) {
+  const baseDomain = baseUrl.origin;
+
+  // Group URLs by event type
+  const eventUrls = {};
+  for (const ev of CRITEO_EVENTS) {
+    eventUrls[ev.key] = [];
+  }
+  eventUrls['unknown'] = [];
+
+  for (const [url, data] of visited) {
+    for (const ev of data.events) {
+      if (eventUrls[ev]) {
+        eventUrls[ev].push(url);
+      }
+    }
+  }
+
+  const tbody = document.getElementById('resultBody');
+  tbody.innerHTML = '';
+
+  for (const ev of CRITEO_EVENTS) {
+    const urls = eventUrls[ev.key];
+    const found = urls.length > 0;
+    const pattern = found ? findUrlPattern(urls, baseDomain) : '—';
+
+    const badgeClass = `badge-${ev.key}`;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>
+        <span class="event-badge ${badgeClass}">${ev.code}</span><br>
+        <span style="font-size:12px;color:#888">${ev.name}</span>
+      </td>
+      <td>${ev.desc}</td>
+      <td>
+        <div class="url-pattern">${escapeHtml(pattern)}</div>
+        ${found ? `
+          <div class="url-list">
+            <details>
+              <summary>${urls.length}件のURL</summary>
+              <ul>${urls.map(u => `<li>${escapeHtml(u)}</li>`).join('')}</ul>
+            </details>
+          </div>
+        ` : ''}
+      </td>
+      <td class="${found ? 'tag-found' : 'tag-missing'}">${found ? '設置あり' : '設置なし'}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Add unknown if any
+  if (eventUrls['unknown'].length > 0) {
+    const urls = eventUrls['unknown'];
+    const pattern = findUrlPattern(urls, baseDomain);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>
+        <span class="event-badge badge-other">その他</span><br>
+        <span style="font-size:12px;color:#888">不明なイベント</span>
+      </td>
+      <td>Criteoタグは検出されたがイベント種別が特定できないもの</td>
+      <td>
+        <div class="url-pattern">${escapeHtml(pattern)}</div>
+        <div class="url-list">
+          <details>
+            <summary>${urls.length}件のURL</summary>
+            <ul>${urls.map(u => `<li>${escapeHtml(u)}</li>`).join('')}</ul>
+          </details>
+        </div>
+      </td>
+      <td class="tag-found">設置あり</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  document.getElementById('resultMeta').textContent =
+    `対象サイト: ${baseDomain} ｜ 確認ページ数: ${visited.size} ｜ 確認日時: ${new Date().toLocaleString('ja-JP')}`;
+  document.getElementById('resultSection').style.display = 'block';
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/\n/g, '<br>');
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function exportCSV() {
+  const rows = [['イベント', 'イベント名', '説明', '設置URLパターン', '設置状況']];
+  const tbody = document.getElementById('resultBody');
+  for (const tr of tbody.querySelectorAll('tr')) {
+    const cells = tr.querySelectorAll('td');
+    const event = cells[0].textContent.trim().split('\n')[0].trim();
+    const name = cells[0].textContent.trim().split('\n').pop().trim();
+    const desc = cells[1].textContent.trim();
+    const pattern = cells[2].querySelector('.url-pattern').textContent.trim();
+    const status = cells[3].textContent.trim();
+    rows.push([event, name, desc, pattern, status]);
+  }
+
+  const bom = '\uFEFF';
+  const csv = bom + rows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `criteo_tag_check_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// Allow Enter key to start
+document.getElementById('siteUrl').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') startCrawl();
+});
+</script>
+</body>
+</html>
