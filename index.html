@@ -252,7 +252,7 @@
           </select>
         </label>
       </div>
-      <p class="cors-note">※ CORSプロキシ経由でHTMLを取得します。一部のサイトでは取得できない場合があります。</p>
+      <p class="cors-note">※ CORSプロキシ経由でHTMLを取得し、GTMコンテナJS内のCriteoタグも解析します。一部のサイトでは取得できない場合があります。</p>
     </div>
 
     <div class="error-msg" id="errorMsg"></div>
@@ -303,6 +303,11 @@ const CORS_PROXIES = [
 let currentProxyIndex = 0;
 let aborted = false;
 
+// Cache for GTM container analysis results
+let gtmCriteoEvents = null; // Set of events found in GTM container
+let gtmAnalyzed = false;
+let gtmHasCriteo = false;
+
 function getProxyUrl(url) {
   return CORS_PROXIES[currentProxyIndex](url);
 }
@@ -341,15 +346,12 @@ function updateProgress(done, total) {
 function extractLinks(html, baseUrl) {
   const links = new Set();
   const base = new URL(baseUrl);
-  // Match href attributes
   const hrefRegex = /href\s*=\s*["']([^"'#]+?)["']/gi;
   let match;
   while ((match = hrefRegex.exec(html)) !== null) {
     try {
       const resolved = new URL(match[1], baseUrl);
-      // Same domain only
       if (resolved.hostname === base.hostname && (resolved.protocol === 'http:' || resolved.protocol === 'https:')) {
-        // Clean URL
         resolved.hash = '';
         const clean = resolved.href.replace(/\/+$/, '') || resolved.origin;
         links.add(clean);
@@ -359,59 +361,158 @@ function extractLinks(html, baseUrl) {
   return links;
 }
 
-function detectCriteoTags(html) {
-  const events = new Set();
+// ===== GTM Container Analysis =====
 
-  // Check if Criteo-related scripts exist
+function extractGtmIds(html) {
+  const ids = new Set();
+  // GTM script tag patterns
+  const patterns = [
+    /googletagmanager\.com\/gtm\.js\?id=(GTM-[A-Z0-9]+)/gi,
+    /googletagmanager\.com\/gtag\/js\?id=(G-[A-Z0-9]+)/gi,
+    /['"]?(GTM-[A-Z0-9]+)['"]?/g,
+  ];
+  for (const pat of patterns) {
+    let m;
+    while ((m = pat.exec(html)) !== null) {
+      if (m[1].startsWith('GTM-')) {
+        ids.add(m[1]);
+      }
+    }
+  }
+  return [...ids];
+}
+
+async function analyzeGtmContainer(gtmId) {
+  log(`GTMコンテナ解析中: ${gtmId}`);
+  const gtmUrl = `https://www.googletagmanager.com/gtm.js?id=${gtmId}`;
+  const js = await fetchWithProxy(gtmUrl);
+  if (!js) {
+    log(`GTMコンテナ取得失敗: ${gtmId}`);
+    return { hasCriteo: false, events: new Set() };
+  }
+
+  const hasCriteo = /criteo/i.test(js) ||
+                    /static\.criteo\.net/i.test(js) ||
+                    /ld\/ld\.js/i.test(js) ||
+                    /criteo_q/i.test(js) ||
+                    /cto_tms/i.test(js) ||
+                    /cto_bundle/i.test(js);
+
+  const events = new Set();
+  if (hasCriteo) {
+    log(`✓ GTM内にCriteoタグを検出: ${gtmId}`);
+
+    // Detect event types inside GTM container JS
+    const eventChecks = [
+      { key: 'vh', patterns: [/viewHome/i, /view_home/i, /["']vh["']/] },
+      { key: 'vl', patterns: [/viewList/i, /view_list/i, /viewCategory/i, /view_category/i, /["']vl["']/] },
+      { key: 'vp', patterns: [/viewProduct/i, /view_product/i, /viewItem/i, /view_item/i, /["']vp["']/] },
+      { key: 'vb', patterns: [/viewBasket/i, /view_basket/i, /viewCart/i, /view_cart/i, /["']vb["']/] },
+      { key: 'tc', patterns: [/trackTransaction/i, /track_transaction/i, /["']tc["']/] },
+    ];
+    for (const ec of eventChecks) {
+      for (const pat of ec.patterns) {
+        if (pat.test(js)) {
+          events.add(ec.key);
+          break;
+        }
+      }
+    }
+
+    if (events.size > 0) {
+      log(`  GTM内イベント: ${[...events].map(e => 'e=' + e).join(', ')}`);
+    } else {
+      log(`  GTM内にCriteo存在するがイベント種別は特定不可`);
+    }
+  }
+
+  return { hasCriteo, events };
+}
+
+// ===== Criteo Detection (HTML + GTM combined) =====
+
+function detectCriteoInHtml(html) {
+  const result = { hasCriteo: false, events: new Set() };
+
+  // Direct Criteo presence in HTML
   const hasCriteo = /criteo/i.test(html) ||
                     /ctag\.js/i.test(html) ||
                     /static\.criteo\.net/i.test(html) ||
+                    /dynamic\.criteo\.net/i.test(html) ||
                     /criteo_q/i.test(html) ||
-                    /cto_tms/i.test(html);
+                    /cto_tms/i.test(html) ||
+                    /cto_bundle/i.test(html) ||
+                    /crto_/i.test(html) ||
+                    /window\.criteo_q/i.test(html) ||
+                    /criteo\.events/i.test(html);
 
-  if (!hasCriteo) return events;
+  if (!hasCriteo) return result;
+  result.hasCriteo = true;
 
-  // Detect specific events
-  // Pattern: "event":"viewHome" or "event": "viewHome" or event:"viewHome"
+  // Detect specific events in HTML
   const eventPatterns = [
-    { key: 'vh', patterns: [/viewHome/i, /["']event["']\s*:\s*["']vh["']/i] },
-    { key: 'vl', patterns: [/viewList/i, /["']event["']\s*:\s*["']vl["']/i, /viewCategory/i] },
-    { key: 'vp', patterns: [/viewProduct/i, /["']event["']\s*:\s*["']vp["']/i, /viewItem/i] },
-    { key: 'vb', patterns: [/viewBasket/i, /["']event["']\s*:\s*["']vb["']/i, /viewCart/i] },
-    { key: 'tc', patterns: [/trackTransaction/i, /["']event["']\s*:\s*["']tc["']/i] },
+    { key: 'vh', patterns: [/viewHome/i, /view_home/i, /["']event["']\s*:\s*["']vh["']/i, /setSiteType/i] },
+    { key: 'vl', patterns: [/viewList/i, /view_list/i, /["']event["']\s*:\s*["']vl["']/i, /viewCategory/i, /view_category/i, /viewSearch/i] },
+    { key: 'vp', patterns: [/viewProduct/i, /view_product/i, /["']event["']\s*:\s*["']vp["']/i, /viewItem/i, /view_item/i] },
+    { key: 'vb', patterns: [/viewBasket/i, /view_basket/i, /["']event["']\s*:\s*["']vb["']/i, /viewCart/i, /view_cart/i] },
+    { key: 'tc', patterns: [/trackTransaction/i, /track_transaction/i, /["']event["']\s*:\s*["']tc["']/i] },
   ];
 
   for (const ep of eventPatterns) {
     for (const pat of ep.patterns) {
       if (pat.test(html)) {
-        events.add(ep.key);
+        result.events.add(ep.key);
         break;
       }
     }
   }
 
-  // If Criteo is present but no specific event detected, mark as unknown
-  if (events.size === 0) {
+  return result;
+}
+
+function detectCriteoForPage(html) {
+  // 1. Check HTML directly
+  const htmlResult = detectCriteoInHtml(html);
+
+  // 2. Merge with GTM results (already analyzed once for the whole site)
+  const events = new Set([...htmlResult.events]);
+  const hasCriteo = htmlResult.hasCriteo || gtmHasCriteo;
+
+  // If GTM has Criteo but we can't determine per-page events from GTM alone,
+  // we check if this page has the GTM container loaded
+  if (gtmHasCriteo && !htmlResult.hasCriteo) {
+    // Check if this page loads GTM at all
+    const hasGtm = /googletagmanager\.com/i.test(html) || /gtag/i.test(html);
+    if (hasGtm) {
+      // GTM is on this page and GTM has Criteo → Criteo fires here
+      // Add GTM-detected events
+      for (const ev of gtmCriteoEvents) {
+        events.add(ev);
+      }
+    }
+  }
+
+  // If HTML has Criteo directly AND GTM has additional events, merge
+  if (htmlResult.hasCriteo && gtmHasCriteo) {
+    for (const ev of gtmCriteoEvents) {
+      events.add(ev);
+    }
+  }
+
+  // If Criteo is present but no specific event, mark unknown
+  if (hasCriteo && events.size === 0) {
     events.add('unknown');
   }
 
   return events;
 }
 
+// ===== URL Pattern Analysis =====
+
 function findUrlPattern(urls, baseDomain) {
   if (urls.length === 0) return '—';
+  if (urls.length === 1) return urls[0];
 
-  // If only one URL
-  if (urls.length === 1) {
-    return urls[0];
-  }
-
-  // Find common path prefix
-  const paths = urls.map(u => {
-    try { return new URL(u).pathname; } catch { return '/'; }
-  });
-
-  // Group by directory pattern
   const dirGroups = {};
   for (const url of urls) {
     try {
@@ -433,7 +534,6 @@ function findUrlPattern(urls, baseDomain) {
     }
   }
 
-  // Build pattern string
   const patterns = [];
   for (const [dir, groupUrls] of Object.entries(dirGroups)) {
     if (dir === '/') {
@@ -445,6 +545,8 @@ function findUrlPattern(urls, baseDomain) {
 
   return patterns.join('\n');
 }
+
+// ===== Main Crawl =====
 
 async function startCrawl() {
   const urlInput = document.getElementById('siteUrl').value.trim();
@@ -464,8 +566,13 @@ async function startCrawl() {
   const maxDepth = parseInt(document.getElementById('maxDepth').value);
   const maxPages = parseInt(document.getElementById('maxPages').value);
 
-  // Reset UI
+  // Reset state
   aborted = false;
+  gtmCriteoEvents = new Set();
+  gtmAnalyzed = false;
+  gtmHasCriteo = false;
+
+  // Reset UI
   document.getElementById('startBtn').disabled = true;
   document.getElementById('startBtn').textContent = '確認中...';
   document.getElementById('errorMsg').style.display = 'none';
@@ -474,58 +581,111 @@ async function startCrawl() {
   document.getElementById('progressLog').innerHTML = '';
   updateProgress(0, 0);
 
-  const visited = new Map(); // url -> { events }
-  const queue = [{ url: baseUrl.href.replace(/\/+$/, '') || baseUrl.origin, depth: 0 }];
-  const seen = new Set([queue[0].url]);
-  let processed = 0;
-
   log(`クロール開始: ${baseUrl.origin}`);
 
-  while (queue.length > 0 && processed < maxPages && !aborted) {
-    const { url, depth } = queue.shift();
-    updateProgress(processed, processed + queue.length + 1);
-    log(`取得中: ${url}`);
+  // Step 1: Fetch the top page first to find GTM IDs
+  const startUrl = baseUrl.href.replace(/\/+$/, '') || baseUrl.origin;
+  log(`取得中: ${startUrl}`);
+  const topHtml = await fetchWithProxy(startUrl);
 
-    const html = await fetchWithProxy(url);
+  if (!topHtml) {
+    showError('サイトのHTMLを取得できませんでした。URLを確認してください。');
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('startBtn').textContent = '確認開始';
+    return;
+  }
+
+  // Step 2: Analyze GTM containers found in top page
+  const gtmIds = extractGtmIds(topHtml);
+  if (gtmIds.length > 0) {
+    log(`GTMコンテナ検出: ${gtmIds.join(', ')}`);
+    for (const gtmId of gtmIds) {
+      const gtmResult = await analyzeGtmContainer(gtmId);
+      if (gtmResult.hasCriteo) {
+        gtmHasCriteo = true;
+        for (const ev of gtmResult.events) {
+          gtmCriteoEvents.add(ev);
+        }
+      }
+    }
+  } else {
+    log('GTMコンテナは検出されませんでした（直接タグ設置を確認します）');
+  }
+  gtmAnalyzed = true;
+
+  // Step 3: Crawl pages
+  const visited = new Map();
+  const queue = [{ url: startUrl, depth: 0, html: topHtml }];
+  const seen = new Set([startUrl]);
+  let processed = 0;
+
+  // Process top page
+  const topEvents = detectCriteoForPage(topHtml);
+  visited.set(startUrl, { events: topEvents });
+  if (topEvents.size > 0) {
+    log(`✓ Criteoタグ検出: ${[...topEvents].map(e => e === 'unknown' ? 'その他' : 'e=' + e).join(', ')} @ ${startUrl}`);
+  } else {
+    log(`- タグなし: ${startUrl}`);
+  }
+
+  // Extract links from top page
+  if (maxDepth > 0) {
+    const links = extractLinks(topHtml, startUrl);
+    for (const link of links) {
+      if (!seen.has(link)) {
+        seen.add(link);
+        queue.push({ url: link, depth: 1 });
+      }
+    }
+  }
+  processed = 1;
+  updateProgress(processed, processed + queue.length);
+
+  // Process remaining pages
+  while (queue.length > 0 && processed < maxPages && !aborted) {
+    const item = queue.shift();
+    if (item.html) { processed++; continue; } // already processed (top page)
+
+    updateProgress(processed, processed + queue.length + 1);
+    log(`取得中: ${item.url}`);
+
+    const html = await fetchWithProxy(item.url);
     if (!html) {
-      log(`取得失敗: ${url}`);
+      log(`取得失敗: ${item.url}`);
       processed++;
       continue;
     }
 
-    // Detect Criteo tags
-    const events = detectCriteoTags(html);
-    visited.set(url, { events });
+    const events = detectCriteoForPage(html);
+    visited.set(item.url, { events });
 
     if (events.size > 0) {
-      const eventStr = [...events].join(', ');
-      log(`✓ Criteoタグ検出: ${eventStr} @ ${url}`);
+      log(`✓ Criteoタグ検出: ${[...events].map(e => e === 'unknown' ? 'その他' : 'e=' + e).join(', ')} @ ${item.url}`);
     } else {
-      log(`- タグなし: ${url}`);
+      log(`- タグなし: ${item.url}`);
     }
 
-    // Extract links if within depth
-    if (depth < maxDepth) {
-      const links = extractLinks(html, url);
+    if (item.depth < maxDepth) {
+      const links = extractLinks(html, item.url);
       for (const link of links) {
         if (!seen.has(link) && seen.size < maxPages * 2) {
           seen.add(link);
-          queue.push({ url: link, depth: depth + 1 });
+          queue.push({ url: link, depth: item.depth + 1 });
         }
       }
     }
 
     processed++;
     updateProgress(processed, processed + queue.length);
-
-    // Small delay to avoid hammering
     await new Promise(r => setTimeout(r, 300));
   }
 
   log(`クロール完了: ${processed} ページを確認`);
+  if (gtmHasCriteo) {
+    log(`※ GTMコンテナ経由でCriteoタグを検出しました`);
+  }
   updateProgress(processed, processed);
 
-  // Build results
   showResults(visited, baseUrl);
 
   document.getElementById('startBtn').disabled = false;
