@@ -238,15 +238,15 @@
       <div class="options-row">
         <label>クロール深度:
           <select id="maxDepth">
-            <option value="1">1（TOPのリンク先のみ）</option>
-            <option value="2" selected>2（2階層まで）</option>
+            <option value="1" selected>1（TOPのリンク先のみ）</option>
+            <option value="2">2（2階層まで）</option>
             <option value="3">3（3階層まで）</option>
           </select>
         </label>
         <label>最大ページ数:
           <select id="maxPages">
-            <option value="30">30</option>
-            <option value="50" selected>50</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
             <option value="100">100</option>
             <option value="200">200</option>
           </select>
@@ -343,6 +343,9 @@ function updateProgress(done, total) {
   document.getElementById('progressText').textContent = `${done} / ${total} ページ確認済み`;
 }
 
+// Skip non-HTML extensions
+const SKIP_EXT = /\.(jpg|jpeg|png|gif|svg|webp|ico|css|js|pdf|zip|xml|json|woff2?|ttf|eot|mp4|mp3|avi|mov|doc|docx|xls|xlsx|ppt|pptx|csv|txt|rss|atom)(\?|$)/i;
+
 function extractLinks(html, baseUrl) {
   const links = new Set();
   const base = new URL(baseUrl);
@@ -352,7 +355,10 @@ function extractLinks(html, baseUrl) {
     try {
       const resolved = new URL(match[1], baseUrl);
       if (resolved.hostname === base.hostname && (resolved.protocol === 'http:' || resolved.protocol === 'https:')) {
+        // Skip non-HTML resources
+        if (SKIP_EXT.test(resolved.pathname)) continue;
         resolved.hash = '';
+        resolved.search = ''; // Remove query params to reduce duplicates
         const clean = resolved.href.replace(/\/+$/, '') || resolved.origin;
         links.add(clean);
       }
@@ -518,14 +524,8 @@ function findUrlPattern(urls, baseDomain) {
     try {
       const parsed = new URL(url);
       const segments = parsed.pathname.split('/').filter(Boolean);
-      let key;
-      if (segments.length === 0) {
-        key = '/';
-      } else if (segments.length === 1) {
-        key = `/${segments[0]}/`;
-      } else {
-        key = `/${segments[0]}/${segments[1]}/`;
-      }
+      // Group by FIRST path segment only (e.g. /category/ 配下)
+      const key = segments.length === 0 ? '/' : `/${segments[0]}/`;
       if (!dirGroups[key]) dirGroups[key] = [];
       dirGroups[key].push(url);
     } catch {
