@@ -190,6 +190,8 @@
     .badge-vp { background: #d1fae5; color: #065f46; }
     .badge-vb { background: #fce7f3; color: #9d174d; }
     .badge-tc { background: #ede9fe; color: #5b21b6; }
+    .badge-vpg { background: #e0f2fe; color: #0369a1; }
+    .badge-vs { background: #fef9c3; color: #854d0e; }
     .badge-other { background: #f3f4f6; color: #374151; }
 
     .export-btn {
@@ -287,11 +289,13 @@
 <script>
 // Criteo event types
 const CRITEO_EVENTS = [
-  { key: 'vh', code: 'e=vh', name: 'viewHome', desc: 'トップページ閲覧' },
-  { key: 'vl', code: 'e=vl', name: 'viewList', desc: '商品一覧ページ閲覧' },
-  { key: 'vp', code: 'e=vp', name: 'viewProduct', desc: '商品詳細ページ閲覧' },
-  { key: 'vb', code: 'e=vb', name: 'viewBasket', desc: 'カートページ閲覧' },
-  { key: 'tc', code: 'e=tc', name: 'trackTransaction', desc: '購入完了ページ' },
+  { key: 'vh',  code: 'e=vh',  name: 'viewHome',         desc: 'トップページ閲覧' },
+  { key: 'vl',  code: 'e=vl',  name: 'viewList',         desc: '商品一覧ページ閲覧' },
+  { key: 'vp',  code: 'e=vp',  name: 'viewProduct',      desc: '商品詳細ページ閲覧' },
+  { key: 'vb',  code: 'e=vb',  name: 'viewBasket',       desc: 'カートページ閲覧' },
+  { key: 'tc',  code: 'e=tc',  name: 'trackTransaction',  desc: '購入完了ページ' },
+  { key: 'vpg', code: 'e=vpg', name: 'viewPage',         desc: '汎用ページ閲覧' },
+  { key: 'vs',  code: 'e=vs',  name: 'viewSearch',       desc: '検索結果ページ' },
 ];
 
 // CORS proxies (fallback chain)
@@ -303,8 +307,8 @@ const CORS_PROXIES = [
 let currentProxyIndex = 0;
 let aborted = false;
 
-// Cache for GTM container analysis results
-let gtmCriteoEvents = null; // Set of events found in GTM container
+// GTM analysis results
+let gtmTagRules = []; // [{ events: Set, urlPatterns: [] }]
 let gtmAnalyzed = false;
 let gtmHasCriteo = false;
 
@@ -371,7 +375,6 @@ function extractLinks(html, baseUrl) {
 
 function extractGtmIds(html) {
   const ids = new Set();
-  // GTM script tag patterns
   const patterns = [
     /googletagmanager\.com\/gtm\.js\?id=(GTM-[A-Z0-9]+)/gi,
     /googletagmanager\.com\/gtag\/js\?id=(G-[A-Z0-9]+)/gi,
@@ -380,134 +383,207 @@ function extractGtmIds(html) {
   for (const pat of patterns) {
     let m;
     while ((m = pat.exec(html)) !== null) {
-      if (m[1].startsWith('GTM-')) {
-        ids.add(m[1]);
-      }
+      if (m[1].startsWith('GTM-')) ids.add(m[1]);
     }
   }
   return [...ids];
 }
 
+// Event detection patterns (shared between GTM and HTML analysis)
+const EVENT_DETECT = [
+  { key: 'vh',  patterns: [/viewHome/i, /view_home/i, /["']vh["']/] },
+  { key: 'vl',  patterns: [/viewList/i, /view_list/i, /viewCategory/i, /view_category/i, /["']vl["']/] },
+  { key: 'vp',  patterns: [/viewProduct/i, /view_product/i, /viewItem/i, /view_item/i, /["']vp["']/] },
+  { key: 'vb',  patterns: [/viewBasket/i, /view_basket/i, /viewCart/i, /view_cart/i, /["']vb["']/] },
+  { key: 'tc',  patterns: [/trackTransaction/i, /track_transaction/i, /["']tc["']/] },
+  { key: 'vpg', patterns: [/viewPage/i, /view_page/i, /["']vpg["']/] },
+  { key: 'vs',  patterns: [/viewSearch(?!R)/i, /view_search/i, /["']vs["']/] },
+];
+
+function detectEventsInText(text) {
+  const events = new Set();
+  for (const ed of EVENT_DETECT) {
+    for (const pat of ed.patterns) {
+      if (pat.test(text)) { events.add(ed.key); break; }
+    }
+  }
+  return events;
+}
+
+// GTM container → extract Criteo tag blocks with their trigger URL rules
+// Returns: { hasCriteo, tagRules: [{ events: Set, urlPatterns: [regex|string] }] }
 async function analyzeGtmContainer(gtmId) {
   log(`GTMコンテナ解析中: ${gtmId}`);
   const gtmUrl = `https://www.googletagmanager.com/gtm.js?id=${gtmId}`;
   const js = await fetchWithProxy(gtmUrl);
   if (!js) {
     log(`GTMコンテナ取得失敗: ${gtmId}`);
-    return { hasCriteo: false, events: new Set() };
+    return { hasCriteo: false, tagRules: [] };
   }
 
-  const hasCriteo = /criteo/i.test(js) ||
-                    /static\.criteo\.net/i.test(js) ||
-                    /ld\/ld\.js/i.test(js) ||
-                    /criteo_q/i.test(js) ||
-                    /cto_tms/i.test(js) ||
-                    /cto_bundle/i.test(js);
+  const hasCriteo = /criteo/i.test(js) || /static\.criteo\.net/i.test(js) ||
+                    /ld\/ld\.js/i.test(js) || /criteo_q/i.test(js) ||
+                    /cto_tms/i.test(js) || /cto_bundle/i.test(js);
 
-  const events = new Set();
-  if (hasCriteo) {
-    log(`✓ GTM内にCriteoタグを検出: ${gtmId}`);
+  if (!hasCriteo) {
+    log(`  GTM内にCriteoタグなし: ${gtmId}`);
+    return { hasCriteo: false, tagRules: [] };
+  }
 
-    // Detect event types inside GTM container JS
-    const eventChecks = [
-      { key: 'vh', patterns: [/viewHome/i, /view_home/i, /["']vh["']/] },
-      { key: 'vl', patterns: [/viewList/i, /view_list/i, /viewCategory/i, /view_category/i, /["']vl["']/] },
-      { key: 'vp', patterns: [/viewProduct/i, /view_product/i, /viewItem/i, /view_item/i, /["']vp["']/] },
-      { key: 'vb', patterns: [/viewBasket/i, /view_basket/i, /viewCart/i, /view_cart/i, /["']vb["']/] },
-      { key: 'tc', patterns: [/trackTransaction/i, /track_transaction/i, /["']tc["']/] },
-    ];
-    for (const ec of eventChecks) {
-      for (const pat of ec.patterns) {
-        if (pat.test(js)) {
-          events.add(ec.key);
-          break;
+  log(`✓ GTM内にCriteoタグを検出: ${gtmId}`);
+
+  // Try to extract Custom HTML tag blocks containing Criteo
+  // GTM uses escaped HTML in vtp_html fields: \\u003Cscript\\u003E ... \\u003C/script\\u003E
+  const tagRules = [];
+
+  // Strategy 1: Find vtp_html blocks that mention criteo
+  // These are Custom HTML tags in GTM
+  const htmlBlockRegex = /vtp_html\s*:\s*["']([^"']*criteo[^"']*)["']/gi;
+  let blockMatch;
+  while ((blockMatch = htmlBlockRegex.exec(js)) !== null) {
+    const block = decodeGtmString(blockMatch[1]);
+    const events = detectEventsInText(block);
+    if (events.size > 0) {
+      tagRules.push({ events, urlPatterns: [], source: 'vtp_html' });
+    }
+  }
+
+  // Strategy 2: Look for larger escaped HTML sections with criteo
+  // GTM often has HTML like: \u003Cscript\u003E\nwindow.criteo_q...
+  const escapedBlockRegex = /(\\u003[Cc]script\\u003[Ee][^]*?\\u003[Cc]\/script\\u003[Ee])/g;
+  let escMatch;
+  while ((escMatch = escapedBlockRegex.exec(js)) !== null) {
+    const decoded = decodeGtmString(escMatch[1]);
+    if (/criteo/i.test(decoded)) {
+      const events = detectEventsInText(decoded);
+      if (events.size > 0) {
+        // Avoid duplicates
+        const evKey = [...events].sort().join(',');
+        const exists = tagRules.some(r => [...r.events].sort().join(',') === evKey);
+        if (!exists) {
+          tagRules.push({ events, urlPatterns: [], source: 'escaped_html' });
         }
       }
     }
+  }
 
-    if (events.size > 0) {
-      log(`  GTM内イベント: ${[...events].map(e => 'e=' + e).join(', ')}`);
-    } else {
-      log(`  GTM内にCriteo存在するがイベント種別は特定不可`);
+  // Strategy 3: If no specific blocks found, detect events from entire GTM JS
+  if (tagRules.length === 0) {
+    const allEvents = detectEventsInText(js);
+    if (allEvents.size > 0) {
+      tagRules.push({ events: allEvents, urlPatterns: [], source: 'global' });
     }
   }
 
-  return { hasCriteo, events };
+  // Try to extract URL trigger patterns from GTM
+  // Look for URL matching predicates: patterns like ["_re","_u","/pattern/"]
+  const urlTriggerRegex = /["']_(?:re|cn|eq|sw|ew)["']\s*,\s*["']_u["']\s*,\s*["']([^"']+)["']/g;
+  let trigMatch;
+  const urlTriggers = [];
+  while ((trigMatch = urlTriggerRegex.exec(js)) !== null) {
+    urlTriggers.push(trigMatch[1]);
+  }
+  // Also look for URL patterns in other formats
+  const urlPatRegex2 = /["'](?:pageUrl|Page URL|url|page_path)["']\s*[,:]\s*["']([^"']+)["']/gi;
+  while ((trigMatch = urlPatRegex2.exec(js)) !== null) {
+    if (trigMatch[1].length > 1 && trigMatch[1].startsWith('/')) {
+      urlTriggers.push(trigMatch[1]);
+    }
+  }
+
+  if (tagRules.length > 0) {
+    const allEvs = new Set();
+    tagRules.forEach(r => r.events.forEach(e => allEvs.add(e)));
+    log(`  GTM内イベント: ${[...allEvs].map(e => 'e=' + e).join(', ')}`);
+    if (urlTriggers.length > 0) {
+      log(`  GTM内URLトリガー: ${urlTriggers.length}件検出`);
+    }
+  }
+
+  return { hasCriteo, tagRules };
 }
 
-// ===== Criteo Detection (HTML + GTM combined) =====
-
-function detectCriteoInHtml(html) {
-  const result = { hasCriteo: false, events: new Set() };
-
-  // Direct Criteo presence in HTML
-  const hasCriteo = /criteo/i.test(html) ||
-                    /ctag\.js/i.test(html) ||
-                    /static\.criteo\.net/i.test(html) ||
-                    /dynamic\.criteo\.net/i.test(html) ||
-                    /criteo_q/i.test(html) ||
-                    /cto_tms/i.test(html) ||
-                    /cto_bundle/i.test(html) ||
-                    /crto_/i.test(html) ||
-                    /window\.criteo_q/i.test(html) ||
-                    /criteo\.events/i.test(html);
-
-  if (!hasCriteo) return result;
-  result.hasCriteo = true;
-
-  // Detect specific events in HTML
-  const eventPatterns = [
-    { key: 'vh', patterns: [/viewHome/i, /view_home/i, /["']event["']\s*:\s*["']vh["']/i, /setSiteType/i] },
-    { key: 'vl', patterns: [/viewList/i, /view_list/i, /["']event["']\s*:\s*["']vl["']/i, /viewCategory/i, /view_category/i, /viewSearch/i] },
-    { key: 'vp', patterns: [/viewProduct/i, /view_product/i, /["']event["']\s*:\s*["']vp["']/i, /viewItem/i, /view_item/i] },
-    { key: 'vb', patterns: [/viewBasket/i, /view_basket/i, /["']event["']\s*:\s*["']vb["']/i, /viewCart/i, /view_cart/i] },
-    { key: 'tc', patterns: [/trackTransaction/i, /track_transaction/i, /["']event["']\s*:\s*["']tc["']/i] },
-  ];
-
-  for (const ep of eventPatterns) {
-    for (const pat of ep.patterns) {
-      if (pat.test(html)) {
-        result.events.add(ep.key);
-        break;
-      }
-    }
-  }
-
-  return result;
+function decodeGtmString(str) {
+  return str
+    .replace(/\\u003C/gi, '<').replace(/\\u003E/gi, '>')
+    .replace(/\\u0026/gi, '&').replace(/\\u0022/gi, '"')
+    .replace(/\\u0027/gi, "'").replace(/\\n/g, '\n')
+    .replace(/\\\\/g, '\\');
 }
 
-function detectCriteoForPage(html) {
-  // 1. Check HTML directly
-  const htmlResult = detectCriteoInHtml(html);
+// ===== Per-page Criteo Detection =====
 
-  // 2. Merge with GTM results (already analyzed once for the whole site)
-  const events = new Set([...htmlResult.events]);
-  const hasCriteo = htmlResult.hasCriteo || gtmHasCriteo;
+function detectCriteoForPage(html, pageUrl) {
+  const events = new Set();
 
-  // If GTM has Criteo but we can't determine per-page events from GTM alone,
-  // we check if this page has the GTM container loaded
-  if (gtmHasCriteo && !htmlResult.hasCriteo) {
-    // Check if this page loads GTM at all
-    const hasGtm = /googletagmanager\.com/i.test(html) || /gtag/i.test(html);
-    if (hasGtm) {
-      // GTM is on this page and GTM has Criteo → Criteo fires here
-      // Add GTM-detected events
-      for (const ev of gtmCriteoEvents) {
-        events.add(ev);
-      }
-    }
-  }
+  // 1. Direct Criteo in page HTML (criteo_q.push, dataLayer, inline scripts)
+  const hasCriteoDirect = /criteo/i.test(html) || /ctag\.js/i.test(html) ||
+    /static\.criteo\.net/i.test(html) || /dynamic\.criteo\.net/i.test(html) ||
+    /criteo_q/i.test(html) || /cto_tms/i.test(html) || /cto_bundle/i.test(html) ||
+    /crto_/i.test(html);
 
-  // If HTML has Criteo directly AND GTM has additional events, merge
-  if (htmlResult.hasCriteo && gtmHasCriteo) {
-    for (const ev of gtmCriteoEvents) {
+  if (hasCriteoDirect) {
+    // Detect specific events from page HTML
+    for (const ev of detectEventsInText(html)) {
       events.add(ev);
     }
   }
 
-  // If Criteo is present but no specific event, mark unknown
-  if (hasCriteo && events.size === 0) {
-    events.add('unknown');
+  // 2. GTM-based detection: check each GTM Criteo tag rule
+  if (gtmHasCriteo && gtmTagRules.length > 0) {
+    const hasGtmOnPage = /googletagmanager\.com/i.test(html);
+    if (hasGtmOnPage) {
+      // Check page's dataLayer for Criteo-specific events
+      // e.g. dataLayer.push({'event': 'criteo_viewProduct', ...})
+      const dlPushes = html.match(/dataLayer\.push\s*\(\s*\{[^}]*\}/g) || [];
+      for (const push of dlPushes) {
+        if (/criteo/i.test(push)) {
+          for (const ev of detectEventsInText(push)) {
+            events.add(ev);
+          }
+        }
+      }
+
+      // Check criteo_q pushes on the page
+      const criteoQPushes = html.match(/criteo_q\.push\s*\([^)]*\)/g) || [];
+      for (const push of criteoQPushes) {
+        for (const ev of detectEventsInText(push)) {
+          events.add(ev);
+        }
+      }
+
+      // Check inline script blocks for Criteo event data
+      const scriptBlocks = html.match(/<script[^>]*>[\s\S]*?<\/script>/gi) || [];
+      for (const block of scriptBlocks) {
+        if (/criteo/i.test(block) || /cto_/i.test(block)) {
+          for (const ev of detectEventsInText(block)) {
+            events.add(ev);
+          }
+        }
+      }
+
+      // If we still found nothing from page HTML, try matching GTM tag rules
+      // against this page's URL
+      if (events.size === 0) {
+        for (const rule of gtmTagRules) {
+          if (rule.urlPatterns && rule.urlPatterns.length > 0) {
+            for (const pat of rule.urlPatterns) {
+              try {
+                if (new RegExp(pat, 'i').test(pageUrl)) {
+                  for (const ev of rule.events) events.add(ev);
+                }
+              } catch { /* invalid regex */ }
+            }
+          }
+        }
+      }
+
+      // Last resort: if GTM has Criteo and page has GTM, but we can't
+      // determine specific event → mark as 'unknown' (not all events!)
+      if (events.size === 0) {
+        events.add('unknown');
+      }
+    }
   }
 
   return events;
@@ -568,7 +644,7 @@ async function startCrawl() {
 
   // Reset state
   aborted = false;
-  gtmCriteoEvents = new Set();
+  gtmTagRules = [];
   gtmAnalyzed = false;
   gtmHasCriteo = false;
 
@@ -603,9 +679,7 @@ async function startCrawl() {
       const gtmResult = await analyzeGtmContainer(gtmId);
       if (gtmResult.hasCriteo) {
         gtmHasCriteo = true;
-        for (const ev of gtmResult.events) {
-          gtmCriteoEvents.add(ev);
-        }
+        gtmTagRules.push(...gtmResult.tagRules);
       }
     }
   } else {
@@ -620,7 +694,7 @@ async function startCrawl() {
   let processed = 0;
 
   // Process top page
-  const topEvents = detectCriteoForPage(topHtml);
+  const topEvents = detectCriteoForPage(topHtml, startUrl);
   visited.set(startUrl, { events: topEvents });
   if (topEvents.size > 0) {
     log(`✓ Criteoタグ検出: ${[...topEvents].map(e => e === 'unknown' ? 'その他' : 'e=' + e).join(', ')} @ ${startUrl}`);
@@ -656,7 +730,7 @@ async function startCrawl() {
       continue;
     }
 
-    const events = detectCriteoForPage(html);
+    const events = detectCriteoForPage(html, item.url);
     visited.set(item.url, { events });
 
     if (events.size > 0) {
